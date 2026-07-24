@@ -1,14 +1,14 @@
-pub fn add(left: u64, right: u64) -> u64 {
-    left + right
-}
+//! Implementation of Spiess, H. and Florian, M. (1989) "Optimal strategies:
+//! A new assignment model for transit networks".
+//! See the ref. at spiess_floarian.tex LaTeX file.
 
-#[cfg(test)]
-mod tests {
-    use super::*;
+mod demand;
+mod hyperpath;
+mod hyperpath_queue;
+mod spiess_floarian;
+mod transit_network;
 
-    #[test]
-    fn it_works() {
-        let result = add(2, 2);
-        assert_eq!(result, 4);
-    }
-}
+pub use demand::{assign_demand, Volumes};
+pub use hyperpath::{find_optimal_strategy, Strategy, VERBOSE};
+pub use spiess_floarian::{compute_sf, SFResult};
+pub use transit_network::Link;

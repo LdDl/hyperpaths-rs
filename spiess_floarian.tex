@@ -1,0 +1,79 @@
+\documentclass[10pt]{article}
+\usepackage[margin=1in]{geometry}  % Adjust margins
+\usepackage{indentfirst}
+\usepackage{subfigure}
+\usepackage{float}
+\usepackage{graphicx}
+\graphicspath{ {./images/} }
+\usepackage[utf8]{inputenc}
+% \usepackage[russian]{babel}
+\usepackage{amsmath}
+\usepackage{tikz}
+\usepackage{url}
+\usepackage[ruled,vlined,linesnumbered]{algorithm2e}
+% Override algorithm2e
+\SetKwFor{ForEach}{for each}{do}{end}
+\SetKwInput{KwData}{Input}
+% Change "else" to "otherwise"
+% Reduce vertical spacing in algorithm
+\setlength{\algomargin}{5pt}
+\SetAlFnt{\small}
+\SetArgSty{text}
+\usepackage{titlesec}
+\titlelabel{\thetitle.\quad}
+
+\newcommand*\circled[1]{\tikz[baseline=(char.base)]{\node[shape=circle,draw,inner sep=2pt] (char) {#1};}}
+
+\usepackage{enumitem}
+
+\begin{document}
+
+\textbf{Just a cut from paper by Heinz Spiess and Michael Florian, Optimal Strategies: A New Assignment Model for Transit Networks, 1988, pages 93-94}
+
+\begin{footnotesize}
+    \begin{algorithm}[H]
+        \SetAlgoLined
+        \LinesNumbered
+        \DontPrintSemicolon  % Remove semicolons to save space
+        \KwResult{ Optimal strategy }
+        \Begin{
+            // Part 1: Find optimal strategy \\
+            // 1.1 Initialization \\
+            $u_{r} = 0$ \\
+            $u_{i} = \infty$ for all $i \in I \setminus \{r\}$ \\
+            $f_{i} = 0$ for all $i \in I$ \\
+            $S = A$ ; $\overline{A} = \emptyset$ \\
+
+            // 1.2 Get next link \\
+            \If{$S = \emptyset$}{
+                STOP;
+            }\Else{
+                find $a = (i, j) \in S$ which satisfies \\
+                $u_j + c_a \leq u_{i'} + u_{a'}$, $a' = (i', j') \in S$ \\
+                $S = S \setminus {a}$\\
+            }
+
+            // 1.3 Update node label \\
+            \If{$u_i \geq u_j + c_a$}{
+                $u_i = \frac{f_i * u_i + f_a * (u_j + c_a)}{f_i + f_a}$ \\
+                $f_i = f_i + f_a$ \\
+                $\overline{A} = \overline{A} \cup {a}$ \\
+            }
+
+            Part 2: Assign demand according to optimal strategy \\
+            // 2.1 Initialization \\
+            $V_i = g_i$, $i \in I$ \\
+            // 2.2 Loading \\
+            Do for every link $a \in A$, in decreasing order of $(u_j + c_a)$ \\
+            \If{$a \in \overline{A}$}{
+                $v_a = \frac{f_a}{f_i}V_i$ \\
+                $V_j = V_j + v_a$ \\ 
+            }\Else{
+                $v_a = 0$\\
+            }
+        }
+        \caption{Algorithm that solves the transit assignment problem}
+    \end{algorithm}
+\end{footnotesize}
+
+\end{document}
