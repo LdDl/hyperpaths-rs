@@ -4,5 +4,11 @@ version = "0.1.0"
 edition = "2024"
 description = "Spiess-Florian optimal strategies transit assignment"
 license = "Apache-2.0"
+readme = "README.md"
+repository = "https://github.com/LdDl/hyperpaths-rs"
+documentation = "https://docs.rs/hyperpaths-rs"
+homepage = "https://github.com/LdDl/hyperpaths-rs"
+keywords = ["transit assignment", "hyperpaths", "optimal strategies"]
+categories = ["transportation", "simulation", "optimization", "science"]
 
 [dependencies]
