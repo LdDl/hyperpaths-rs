@@ -8,7 +8,7 @@ readme = "README.md"
 repository = "https://github.com/LdDl/hyperpaths-rs"
 documentation = "https://docs.rs/hyperpaths-rs"
 homepage = "https://github.com/LdDl/hyperpaths-rs"
-keywords = ["transit assignment", "hyperpaths", "optimal strategies"]
-categories = ["transportation", "simulation", "optimization", "science"]
+keywords = ["transit", "assignment", "hyperpaths", "spiess-florian", "transportation"]
+categories = ["algorithms", "simulation", "science", "mathematics"]
 
 [dependencies]
