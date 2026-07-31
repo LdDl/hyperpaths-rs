@@ -1,7 +1,6 @@
-use std::cmp::Ordering;
 use std::collections::{HashMap, HashSet};
 
-use crate::hyperpath::{verbose, Strategy, INFINITE_FREQUENCY};
+use crate::hyperpath::{verbose, Strategy};
 use crate::transit_network::Link;
 
 /// Volumes holds the assigned demand according to the optimal strategy.
@@ -19,22 +18,16 @@ pub fn assign_demand<'a>(
     trips: &HashMap<String, HashMap<String, f64>>,
     destination: &str,
 ) -> Volumes {
-    // Work on a copy so the caller's ASet order is preserved.
-    let mut sorted: Vec<&'a Link> = optimal_strategy.a_set.clone();
-
-    // Sort attractive links by decreasing (u_j + c_a).
-    // Tie-break by decreasing u[FromNode] so upstream nodes are loaded first.
-    let labels = &optimal_strategy.labels;
-    sorted.sort_by(|a, b| {
-        let ai = labels.get(&a.to_node).copied().unwrap_or(0.0) + a.travel_cost;
-        let aj = labels.get(&b.to_node).copied().unwrap_or(0.0) + b.travel_cost;
-        if ai != aj {
-            return aj.partial_cmp(&ai).unwrap_or(Ordering::Equal);
-        }
-        let from_a = labels.get(&a.from_node).copied().unwrap_or(0.0);
-        let from_b = labels.get(&b.from_node).copied().unwrap_or(0.0);
-        from_b.partial_cmp(&from_a).unwrap_or(Ordering::Equal)
-    });
+    // The attractive set is built in acceptance order, which is
+    // non-decreasing u_j + c_a (heap pops), so its reverse is exactly the
+    // paper's decreasing loading order - no sorting needed, as the paper
+    // notes on p. 97: the processing order of step 2.2 "is the inverse of
+    // the order used in part 1 of the algorithm". At zero-cost ties
+    // (no-wait chains produce exactly equal keys) reverse acceptance
+    // order also guarantees that a node's inflow links are loaded before
+    // its outflow links: a link (i, j) is accepted before the links into i
+    // are updated and popped.
+    let sorted = &optimal_strategy.a_set;
 
     let mut node_volumes: HashMap<String, f64> = HashMap::with_capacity(all_stops.len());
     for i in all_stops {
@@ -56,14 +49,19 @@ pub fn assign_demand<'a>(
             .insert(a.to_node.clone(), 0.0);
     }
 
-    for a in sorted.iter() {
-        let mut freq = INFINITE_FREQUENCY;
-        if a.headway > 0.0 {
-            freq = 1.0 / a.headway;
-        }
+    for a in sorted.iter().rev() {
         let f_i = optimal_strategy.freqs.get(&a.from_node).copied().unwrap_or(0.0);
         let node_volume = node_volumes.get(&a.from_node).copied().unwrap_or(0.0);
-        let va = (freq / f_i) * node_volume;
+        let va = if f_i.is_infinite() {
+			// A no-wait basket holds exactly one link (the one that replaced it);
+            // per the paper's modified step 2.2 (p. 96) the link takes
+			// the whole node volume: v_a := V_i
+            node_volume
+        } else {
+            // A finite basket holds only boarding links (headway > 0)
+            let freq = 1.0 / a.headway;
+            (freq / f_i) * node_volume
+        };
         if verbose() {
             let to_volume = node_volumes.get(&a.to_node).copied().unwrap_or(0.0);
             println!(
@@ -71,18 +69,8 @@ pub fn assign_demand<'a>(
                 a.from_node, a.to_node
             );
             println!(
-                "\\quad $v_{{({}, {})}} = \\frac{{{}}}{{{}}}{} = {}$ \\\\ ",
-                a.from_node, a.to_node, freq, f_i, node_volume, va
-            );
-            println!(
-                "\\quad $V_{{{}}} = V_{{{}}} + v_{{({}, {}) = {} + {} = {}}}$ \\\\ ",
-                a.to_node,
-                a.to_node,
-                a.from_node,
-                a.to_node,
-                to_volume,
-                va,
-                to_volume + va
+                "\\quad $v_{{({}, {})}} = {}$, $V_{{{}}} = {} + {}$ \\\\ ",
+                a.from_node, a.to_node, va, a.to_node, to_volume, va
             );
         }
         v.entry(a.from_node.clone())
@@ -106,6 +94,44 @@ pub fn assign_demand<'a>(
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    #[test]
+    fn test_zero_cost_chain_loading() {
+        // Regression for the loading order at exact zero-cost ties: the
+        // alighting link (B1 -> S2) and the walking link (S2 -> S3) both have
+        // key u_j + c_a = 4 and equal tail labels, so no sort comparator can
+        // recover the dependency between them. Reverse acceptance order must
+        // load the inflow of S2 before its outflow.
+        use crate::hyperpath::find_optimal_strategy;
+
+        let all_nodes: HashSet<String> = ["S1", "B0", "B1", "S2", "S3"]
+            .iter()
+            .map(|s| s.to_string())
+            .collect();
+        let all_links = vec![
+            // boarding: wait for the bus (headway 5), no riding yet
+            Link::new("S1", "B0", "Bus", 0.0, 5.0),
+            // on-board segment
+            Link::new("B0", "B1", "Bus", 10.0, 0.0),
+            // alighting, key u_S2 + 0 = 4
+            Link::new("B1", "S2", "Bus", 0.0, 0.0),
+            // walking to the destination, key u_S3 + 4 = 4
+            Link::new("S2", "S3", "Walk", 4.0, 0.0),
+        ];
+        let ops = find_optimal_strategy(&all_links, &all_nodes, "S3");
+        // 5 wait + 10 ride + 0 alight + 4 walk
+        assert!((ops.labels["S1"] - 19.0).abs() <= 1e-12);
+
+        let trips: HashMap<String, HashMap<String, f64>> = HashMap::from([(
+            "S1".to_string(),
+            HashMap::from([("S3".to_string(), 100.0)]),
+        )]);
+        let volumes = assign_demand(&all_links, &all_nodes, &ops, &trips, "S3");
+        assert!((volumes.links["S1"]["B0"] - 100.0).abs() <= 1e-12);
+        assert!((volumes.links["B0"]["B1"] - 100.0).abs() <= 1e-12);
+        assert!((volumes.links["B1"]["S2"] - 100.0).abs() <= 1e-12);
+        assert!((volumes.links["S2"]["S3"] - 100.0).abs() <= 1e-12);
+    }
 
     #[test]
     fn test_assign_demand() {
@@ -142,9 +168,9 @@ mod tests {
             freqs: HashMap::from([
                 ("A".to_string(), 1.0 / 3.0),
                 ("X".to_string(), 7.0 / 30.0),
-                ("X2".to_string(), INFINITE_FREQUENCY),
+                ("X2".to_string(), f64::INFINITY),
                 ("Y".to_string(), 0.4),
-                ("Y3".to_string(), INFINITE_FREQUENCY),
+                ("Y3".to_string(), f64::INFINITY),
                 ("B".to_string(), 0.0),
             ]),
             a_set: vec![

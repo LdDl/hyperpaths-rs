@@ -11,24 +11,18 @@ use crate::transit_network::Link;
 pub struct Strategy<'a> {
     /// u_{i} - expected travel time from node i to destination
     pub labels: HashMap<String, f64>,
-    /// f_{i} - combined frequency of attractive links at node i
+    /// f_{i} - combined frequency of attractive links at node i.
+    /// `f64::INFINITY` marks a node whose basket is a single no-wait link.
     pub freqs: HashMap<String, f64>,
     /// \overline{A} - attractive links forming the hyperpath
     pub a_set: Vec<&'a Link>,
 }
 
-/// When the first attractive link arrives at a node, f_i = 0 and u_i = +Inf,
-/// so f_i * u_i = 0 * Inf = NaN in IEEE 754. The correct mathematical value
-/// is 1: the Spiess-Florian expected travel time is
+/// The waiting-time constant of the Spiess-Florian expected travel time:
 ///   u_i = (1 + sum(f_a * (c_a + u_j))) / f_i
-/// so the product f_i * u_i = 1 + sum(...). At initialization the sum is
-/// empty, leaving f_i * u_i = 1. This constant replaces the NaN.
+/// When the first attractive link arrives at a node the sum is empty and
+/// the numerator starts from this constant.
 pub(crate) const ALPHA: f64 = 1.0;
-
-/// Frequency used for on-board (riding) links where headway = 0.
-/// Must be finite to avoid Inf * 0 = NaN in the update formula.
-/// 1e15 gives an effective wait of 1e-15 time units - negligible.
-pub(crate) const INFINITE_FREQUENCY: f64 = 1e15;
 
 pub static VERBOSE: AtomicBool = AtomicBool::new(false);
 
@@ -65,7 +59,11 @@ pub fn find_optimal_strategy<'a>(
         u.insert(stop.clone(), f64::INFINITY);
     }
 
-    let mut overline_a: Vec<&'a Link> = Vec::with_capacity(all_links.len() / 2);
+    let mut overline_a: Vec<Option<&'a Link>> = Vec::with_capacity(all_links.len() / 2);
+    // Positions of each node's basket links inside overline_a, so that a
+    // no-wait link can replace the whole basket. Replaced entries are set
+    // to None and compacted at the end.
+    let mut a_set_idx: HashMap<&'a str, Vec<usize>> = HashMap::new();
 
     let mut links_by_to_node: HashMap<&'a str, Vec<&'a Link>> = HashMap::new();
     for link in all_links {
@@ -111,65 +109,73 @@ pub fn find_optimal_strategy<'a>(
         if verbose() {
             println!("Process: $a = (i, j) = ({}, {})$, \\\\ ", i, j);
         }
+        // A node already served by a no-wait link is final: the no-wait
+        // link absorbs all flow (its share f_a/f_i is 1 in the limit),
+        // so no other link may enter the basket
+        let f_i = f.get(i).copied().unwrap_or(0.0);
+        if f_i.is_infinite() {
+            continue;
+        }
         let u_i = u.get(i).copied().unwrap_or(0.0);
         if u_i < sum_uc {
             continue;
         }
-        let u_j = u.get(j).copied().unwrap_or(0.0);
         if verbose() {
             println!(
-                "\\quad $u_i < u_j + c_a : {} < {} + {}$ - FALSE \\\\ ",
-                u_i, u_j, a.travel_cost
+                "\\quad $u_i < u_j + c_a : {} < {}$ - FALSE \\\\ ",
+                u_i, sum_uc
             );
         }
-        let mut freq = INFINITE_FREQUENCY;
-        if a.headway > 0.0 {
-            freq = 1.0 / a.headway;
+        if a.headway <= 0.0 {
+            // No-wait link (infinite frequency): the modified step 1.3
+            // given by the paper on p. 96 - the exact limit of the label
+            // update formula as f_a -> inf. The link replaces the whole
+            // attractive basket:
+            //   u_i := u_j + c_a, f_i := inf, A_i := {a}
+            u.insert(i.to_string(), sum_uc);
+            f.insert(i.to_string(), f64::INFINITY);
+            let indices = a_set_idx.entry(i).or_default();
+            for idx in indices.iter() {
+                overline_a[*idx] = None;
+            }
+            indices.clear();
+            overline_a.push(Some(a));
+            indices.push(overline_a.len() - 1);
+            if verbose() {
+                println!(
+                    "\\quad no-wait link: $u_i = u_j + c_a = {}$, $f_i = \\infty$, basket replaced by $({}, {})$ \\\\ ",
+                    sum_uc, i, j
+                );
+            }
+        } else {
+            let freq = 1.0 / a.headway;
+            if verbose() {
+                println!("\\quad $f_a = {}$ \\\\ ", freq);
+                println!("\\quad $u_j + c_a = {}$ \\\\ ", sum_uc);
+                println!("\\quad $u_i = {}$ \\\\ ", u_i);
+            }
+            let new_u = if f_i == 0.0 {
+                // First link in the basket: u_i = (1 + f_a*(u_j+c_a)) / f_a
+                (ALPHA + freq * sum_uc) / freq
+            } else {
+                (f_i * u_i + freq * sum_uc) / (f_i + freq)
+            };
+            u.insert(i.to_string(), new_u);
+            f.insert(i.to_string(), f_i + freq);
+            overline_a.push(Some(a));
+            a_set_idx.entry(i).or_default().push(overline_a.len() - 1);
+            if verbose() {
+                println!(
+                    "\\quad$u_i = \\frac{{f_i * u_i + f_a * (u_j + c_a)}}{{f_i + f_a}} = {}$, $f_i = {}$ \\\\ ",
+                    new_u,
+                    f_i + freq
+                );
+                println!(
+                    "\\quad $\\overline{{A}} = \\overline{{A}} \\cup {{({}, {})}}$ \\\\ ",
+                    i, j
+                );
+            }
         }
-        let f_i = f.get(i).copied().unwrap_or(0.0);
-        if verbose() {
-            println!("\\quad $f_a = {}$ \\\\ ", freq);
-            println!("\\quad $u_j + c_a = {}$ \\\\ ", u_j + a.travel_cost);
-            println!("\\quad $u_i = {}$ \\\\ ", u_i);
-            println!(
-                "\\quad$u_i = \\frac{{f_i * u_i + f_a * (u_j + c_a)}}{{f_i + f_a}} = \\frac{{({}) * ({}) + ({}) * (({}) + ({}))}}{{({}) + ({})}} = $ \\\\ ",
-                f_i, u_i, freq, u_j, a.travel_cost, f_i, freq
-            );
-        }
-        let mut numerator_part = f_i * u_i;
-        if numerator_part.is_nan() {
-            numerator_part = ALPHA;
-        }
-        let mut numerator_part2 = freq * (u_j + a.travel_cost);
-        if numerator_part2.is_nan() {
-            numerator_part2 = ALPHA;
-        }
-        let numerator = numerator_part + numerator_part2;
-        let denominator = f_i + freq;
-        u.insert(i.to_string(), numerator / denominator);
-        if verbose() {
-            println!(
-                "\\quad \\quad $\\frac{{({}) + ({})}}{{({}) + ({})}} = \\frac{{{}}}{{{}}} = {}$ \\\\ ",
-                numerator_part,
-                numerator_part2,
-                f_i,
-                freq,
-                numerator,
-                denominator,
-                u.get(i).copied().unwrap_or(0.0)
-            );
-            println!(
-                "\\quad $f_i = f_{{i}} + f_a = ({}) + ({}) = {}$ \\\\ ",
-                f_i, freq, denominator
-            );
-            println!(
-                "\\quad $\\overline{{A}} = \\overline{{A}} \\cup {{a}} = \\overline{{A}} \\cup {{({}, {})}}$ \\\\ ",
-                i, j
-            );
-        }
-        f.insert(i.to_string(), denominator);
-
-        overline_a.push(a);
 
         if let Some(links_to_update) = links_by_to_node.get(i) {
             for link in links_to_update {
@@ -198,10 +204,15 @@ pub fn find_optimal_strategy<'a>(
             }
         }
     }
+
+    // Compact the attractive set: drop entries replaced by no-wait links.
+    // The append order is preserved, i.e. non-decreasing u_j + c_a.
+    let a_set: Vec<&'a Link> = overline_a.into_iter().flatten().collect();
+
     Strategy {
         labels: u,
         freqs: f,
-        a_set: overline_a,
+        a_set,
     }
 }
 
@@ -233,6 +244,8 @@ mod tests {
 
         const EPS: f64 = 1e-9;
 
+        // With exact no-wait handling the labels match the paper exactly:
+        // no big-M artifacts like 4.000000000000001
         let expected_labels: HashMap<&str, f64> = HashMap::from([
             ("A", 27.75),
             ("X", 19.071428571428573),
@@ -241,12 +254,13 @@ mod tests {
             ("Y3", 4.0),
             ("B", 0.0),
         ]);
+        // +Inf marks nodes whose basket is a single no-wait link
         let expected_freqs: HashMap<&str, f64> = HashMap::from([
             ("A", 1.0 / 3.0),
             ("X", 7.0 / 30.0),
-            ("X2", INFINITE_FREQUENCY),
+            ("X2", f64::INFINITY),
             ("Y", 0.4),
-            ("Y3", INFINITE_FREQUENCY),
+            ("Y3", f64::INFINITY),
             ("B", 0.0),
         ]);
         // Matches the paper order (Spiess & Florian 1989, p. 93-94)
@@ -307,13 +321,22 @@ mod tests {
                 k
             );
             let want = expected_freqs[k.as_str()];
-            assert!(
-                (v - want).abs() <= EPS,
-                "Incorrect frequency value for node {}: got {}, want {}",
-                k,
-                v,
-                want
-            );
+            if want.is_infinite() {
+                assert!(
+                    v.is_infinite() && *v > 0.0,
+                    "Frequency for node {} must be +Inf, got {}",
+                    k,
+                    v
+                );
+            } else {
+                assert!(
+                    (v - want).abs() <= EPS,
+                    "Incorrect frequency value for node {}: got {}, want {}",
+                    k,
+                    v,
+                    want
+                );
+            }
         }
         for (i, v) in ops.a_set.iter().enumerate() {
             println!("{:?} {:?}", v, expected_a_set[i]);
@@ -321,6 +344,42 @@ mod tests {
                 std::ptr::eq(*v, expected_a_set[i]),
                 "Incorrect link in attractive set at index {}",
                 i
+            );
+        }
+    }
+
+    #[test]
+    fn test_no_wait_replaces_basket() {
+        // A boarding link enters the basket of I first (key 4), then a
+        // cheaper no-wait chain I->W->D (key 5 < current u_I = 10) must
+        // replace it entirely: exact label, infinite frequency, single link.
+        let all_nodes: HashSet<String> =
+            ["I", "W", "D"].iter().map(|s| s.to_string()).collect();
+        let all_links = vec![
+            // boarding link, key u_D + 4 = 4, accepted first: u_I = 6 + 4 = 10
+            Link::new("I", "D", "Bus", 4.0, 6.0),
+            // no-wait walk, key u_W + 3 = 5, replaces the basket: u_I = 5
+            Link::new("I", "W", "Walk", 3.0, 0.0),
+            // no-wait walk, key 2
+            Link::new("W", "D", "Walk", 2.0, 0.0),
+        ];
+        let ops = find_optimal_strategy(&all_links, &all_nodes, "D");
+
+        assert!((ops.labels["I"] - 5.0).abs() <= 1e-12);
+        assert!((ops.labels["W"] - 2.0).abs() <= 1e-12);
+        assert!(ops.freqs["I"].is_infinite());
+        assert!(ops.freqs["W"].is_infinite());
+
+        // The replaced boarding link I->D must not remain attractive
+        assert_eq!(
+            ops.a_set.len(),
+            2,
+            "basket of I must hold only the no-wait link"
+        );
+        for link in &ops.a_set {
+            assert_eq!(
+                link.headway, 0.0,
+                "only no-wait links expected in the attractive set"
             );
         }
     }
