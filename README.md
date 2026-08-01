@@ -16,13 +16,20 @@ Here is copy of algorithm in MathJax (for the LaTeX see [spiess_floarian.tex](./
    - Set $f_i = 0$ for all nodes
    - Initialize empty attractive set $\overline{A}$
 
-2. **Label Setting**
-   - For each link $a = (i,j)$ with minimum $u_j + c_a$
+2. **Label Setting** (repeated until the link set is exhausted)
+   - Take the unexamined link $a = (i,j)$ with minimum $u_j + c_a$
    - If $u_i \geq u_j + c_a$:
      * Update node label: $$u_i = \frac{f_i \cdot u_i + f_a \cdot (u_j + c_a)}{f_i + f_a}$$
      * Update frequency: $$f_i = f_i + f_a$$
      * Add to attractive set: $$\overline{A} = \overline{A} \cup \{a\}$$
-    
+
+   Note: the implementation accepts a link only on strict improvement,
+   $u_i > u_j + c_a$. At exact equality the update above is a no-op, so
+   labels and costs are identical, but accepting such links can close
+   zero-cost board-alight cycles on which the one-pass loading of part 2
+   loses flow. See the remark in [spiess_floarian.tex](./spiess_floarian.tex)
+   and `test_board_alight_loop_conservation`.
+
 ### Part 2: Assign demand according to optimal strategy
 
 1. **Initialization**

@@ -1,7 +1,7 @@
 use std::collections::{HashMap, HashSet};
 
-use crate::demand::{assign_demand, Volumes};
-use crate::hyperpath::{find_optimal_strategy, Strategy};
+use crate::demand::{Volumes, assign_demand};
+use crate::hyperpath::{Strategy, find_optimal_strategy};
 use crate::transit_network::Link;
 
 /// SFResult is the result of running through the Spiess-Florian algorithm

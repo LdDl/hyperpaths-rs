@@ -1,6 +1,6 @@
 use std::collections::{HashMap, HashSet};
 
-use crate::hyperpath::{verbose, Strategy};
+use crate::hyperpath::{Strategy, verbose};
 use crate::transit_network::Link;
 
 /// Volumes holds the assigned demand according to the optimal strategy.
@@ -50,12 +50,16 @@ pub fn assign_demand<'a>(
     }
 
     for a in sorted.iter().rev() {
-        let f_i = optimal_strategy.freqs.get(&a.from_node).copied().unwrap_or(0.0);
+        let f_i = optimal_strategy
+            .freqs
+            .get(&a.from_node)
+            .copied()
+            .unwrap_or(0.0);
         let node_volume = node_volumes.get(&a.from_node).copied().unwrap_or(0.0);
         let va = if f_i.is_infinite() {
-			// A no-wait basket holds exactly one link (the one that replaced it);
+            // A no-wait basket holds exactly one link (the one that replaced it);
             // per the paper's modified step 2.2 (p. 96) the link takes
-			// the whole node volume: v_a := V_i
+            // the whole node volume: v_a := V_i
             node_volume
         } else {
             // A finite basket holds only boarding links (headway > 0)
@@ -122,15 +126,65 @@ mod tests {
         // 5 wait + 10 ride + 0 alight + 4 walk
         assert!((ops.labels["S1"] - 19.0).abs() <= 1e-12);
 
-        let trips: HashMap<String, HashMap<String, f64>> = HashMap::from([(
-            "S1".to_string(),
-            HashMap::from([("S3".to_string(), 100.0)]),
-        )]);
+        let trips: HashMap<String, HashMap<String, f64>> =
+            HashMap::from([("S1".to_string(), HashMap::from([("S3".to_string(), 100.0)]))]);
         let volumes = assign_demand(&all_links, &all_nodes, &ops, &trips, "S3");
         assert!((volumes.links["S1"]["B0"] - 100.0).abs() <= 1e-12);
         assert!((volumes.links["B0"]["B1"] - 100.0).abs() <= 1e-12);
         assert!((volumes.links["B1"]["S2"] - 100.0).abs() <= 1e-12);
         assert!((volumes.links["S2"]["S3"] - 100.0).abs() <= 1e-12);
+    }
+
+    #[test]
+    fn test_board_alight_loop_conservation() {
+        // Regression for the strict acceptance test in step 1.3. Line F is
+        // useless onward from S2 (it rides only to the dead end S3), so its
+        // route node F2 gets its label through the alighting link:
+        // u_F2 = u_S2 + 0. The boarding link S2 -> F2 then has key exactly
+        // u_S2; the paper's nonstrict test (u_i >= u_j + c_a) would accept
+        // it, close the zero-cost cycle S2 -> F2 -> S2 and strand part of
+        // the volume in phase 2. Strict acceptance must keep line F out and
+        // deliver all 100 trips through line R.
+        use crate::hyperpath::find_optimal_strategy;
+
+        let all_nodes: HashSet<String> = ["S1", "S2", "S3", "R2", "F2"]
+            .iter()
+            .map(|s| s.to_string())
+            .collect();
+        let all_links = vec![
+            // line R: boarding at S2, riding to the destination S1
+            Link::new("S2", "R2", "R", 0.0, 6.0),
+            Link::new("R2", "S1", "R", 5.0, 0.0),
+            // line F: boarding at S2, riding only to the dead end S3
+            Link::new("S2", "F2", "F", 0.0, 6.0),
+            Link::new("F2", "S3", "F", 5.0, 0.0),
+            // alighting back at S2, sets u_F2 = u_S2
+            Link::new("F2", "S2", "F", 0.0, 0.0),
+        ];
+        let ops = find_optimal_strategy(&all_links, &all_nodes, "S1");
+        // 6 wait + 5 ride
+        assert!((ops.labels["S2"] - 11.0).abs() <= 1e-12);
+
+        let trips: HashMap<String, HashMap<String, f64>> =
+            HashMap::from([("S2".to_string(), HashMap::from([("S1".to_string(), 100.0)]))]);
+        let volumes = assign_demand(&all_links, &all_nodes, &ops, &trips, "S1");
+        assert!((volumes.links["S2"]["R2"] - 100.0).abs() <= 1e-12);
+        assert!((volumes.links["R2"]["S1"] - 100.0).abs() <= 1e-12);
+        // the useless line carries nothing
+        let board_f = volumes
+            .links
+            .get("S2")
+            .and_then(|m| m.get("F2"))
+            .copied()
+            .unwrap_or(0.0);
+        let alight_f = volumes
+            .links
+            .get("F2")
+            .and_then(|m| m.get("S2"))
+            .copied()
+            .unwrap_or(0.0);
+        assert!(board_f.abs() <= 1e-12);
+        assert!(alight_f.abs() <= 1e-12);
     }
 
     #[test]
@@ -152,10 +206,8 @@ mod tests {
             Link::new("Y3", "B", "Line 3", 4.0, 0.0),
         ];
         let destination_node = "B";
-        let od_matrix: HashMap<String, HashMap<String, f64>> = HashMap::from([(
-            "A".to_string(),
-            HashMap::from([("B".to_string(), 1.0)]),
-        )]);
+        let od_matrix: HashMap<String, HashMap<String, f64>> =
+            HashMap::from([("A".to_string(), HashMap::from([("B".to_string(), 1.0)]))]);
         let optimal_strategy = Strategy {
             labels: HashMap::from([
                 ("A".to_string(), 27.75),
@@ -204,10 +256,7 @@ mod tests {
             ("A", HashMap::from([("B", 0.5), ("X2", 0.5)])),
             ("X2", HashMap::from([("X", 0.0), ("Y", 0.5)])),
             ("X", HashMap::from([("X2", 0.0), ("Y3", 0.0)])),
-            (
-                "Y",
-                HashMap::from([("Y3", 1.0 / 12.0), ("B", 5.0 / 12.0)]),
-            ),
+            ("Y", HashMap::from([("Y3", 1.0 / 12.0), ("B", 5.0 / 12.0)])),
             ("Y3", HashMap::from([("Y", 0.0), ("B", 1.0 / 12.0)])),
         ]);
         let correct_nodes: HashMap<&str, f64> = HashMap::from([

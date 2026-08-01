@@ -8,7 +8,7 @@ mod hyperpath_queue;
 mod spiess_floarian;
 mod transit_network;
 
-pub use demand::{assign_demand, Volumes};
-pub use hyperpath::{find_optimal_strategy, Strategy, VERBOSE};
-pub use spiess_floarian::{compute_sf, SFResult};
+pub use demand::{Volumes, assign_demand};
+pub use hyperpath::{Strategy, VERBOSE, find_optimal_strategy};
+pub use spiess_floarian::{SFResult, compute_sf};
 pub use transit_network::Link;

@@ -1,6 +1,6 @@
 use std::collections::{HashMap, HashSet};
 
-use hyperpaths_rs::{compute_sf, Link};
+use hyperpaths_rs::{Link, compute_sf};
 
 fn main() {
     let all_nodes: HashSet<String> = ["A", "X", "X2", "Y", "Y3", "B"]
@@ -20,10 +20,8 @@ fn main() {
         Link::new("Y3", "B", "Line 3", 4.0, 0.0),
     ];
     let destination_node = "B";
-    let od_matrix: HashMap<String, HashMap<String, f64>> = HashMap::from([(
-        "A".to_string(),
-        HashMap::from([("B".to_string(), 1.0)]),
-    )]);
+    let od_matrix: HashMap<String, HashMap<String, f64>> =
+        HashMap::from([("A".to_string(), HashMap::from([("B".to_string(), 1.0)]))]);
     let res = compute_sf(&all_links, &all_nodes, destination_node, &od_matrix);
     println!("Optimal strategy:");
     println!("\tNode labels:");
@@ -42,7 +40,10 @@ fn main() {
     println!("\tLinks volumes:");
     for (from_node, to_map) in &res.volumes.links {
         for (to_node, volume) in to_map {
-            println!("\t\tv_{{i, j}} = ({}, {}): {:.6}", from_node, to_node, volume);
+            println!(
+                "\t\tv_{{i, j}} = ({}, {}): {:.6}",
+                from_node, to_node, volume
+            );
         }
     }
     println!("\tNodes volumes:");

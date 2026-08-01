@@ -78,10 +78,7 @@ pub fn find_optimal_strategy<'a>(
     for link in all_links {
         let priority = u.get(&link.to_node).copied().unwrap_or(0.0) + link.travel_cost;
         let id = pq.push(link, priority);
-        entries
-            .entry(link.from_node.as_str())
-            .or_default()
-            .push(id);
+        entries.entry(link.from_node.as_str()).or_default().push(id);
     }
     pq.init();
     if verbose() {
@@ -117,12 +114,38 @@ pub fn find_optimal_strategy<'a>(
             continue;
         }
         let u_i = u.get(i).copied().unwrap_or(0.0);
-        if u_i < sum_uc {
+        // Strict improvement test: a link is accepted only if it
+        // strictly improves the label. Step 1.3 of Spiess & Florian
+        // (1989) prints the nonstrict u_i >= u_j + c_a, but the two
+        // rules differ only at exact equality, where the update is a
+        // no-op (the combination formula returns u_i unchanged; for
+        // f_a = inf the basket is replaced at the same value): labels,
+        // expected travel times and every number published in the
+        // paper are identical either way. The strict form is what
+        // part 2 needs. Step 2.2 loads links "in reverse topological
+        // order (decreasing u_j + c_a)" (p. 94) and Proposition 4
+        // claims flow conservation "by construction" - both presume an
+        // acyclic strategy, which the nonstrict rule does not
+        // guarantee: in an expanded route graph a boarding link (cost
+        // 0) into a route node whose label came from its own alighting
+        // link (cost 0) has key exactly u_i, so >= admits a zero-cost
+        // stop -> node -> stop cycle and the one-pass loading strands
+        // the volume entering it (see
+        // test_board_alight_loop_conservation). Rejecting at equality
+        // keeps the strategy acyclic and stays optimal: for the
+        // rejected link mu_a = 0 satisfies dual feasibility (20) as an
+        // equality and complementary slackness (24) holds since
+        // v_a = 0, a degenerate optimum. The prose of p. 94 ("if this
+        // time is smaller than u_i, link a is included") describes
+        // exactly this strict rule. All step, equation and page
+        // references above are to the original paper, not to the
+        // spiess_floarian.tex excerpt in this repository.
+        if u_i <= sum_uc {
             continue;
         }
         if verbose() {
             println!(
-                "\\quad $u_i < u_j + c_a : {} < {}$ - FALSE \\\\ ",
+                "\\quad $u_i \\leq u_j + c_a : {} \\leq {}$ - FALSE \\\\ ",
                 u_i, sum_uc
             );
         }
@@ -183,8 +206,7 @@ pub fn find_optimal_strategy<'a>(
                     for &eid in i_entries {
                         let entry_link = pq.link(eid);
                         if entry_link.to_node == i && entry_link.from_node == link.from_node {
-                            let new_priority =
-                                u.get(i).copied().unwrap_or(0.0) + link.travel_cost;
+                            let new_priority = u.get(i).copied().unwrap_or(0.0) + link.travel_cost;
                             pq.update(eid, new_priority);
                             break;
                         }
@@ -353,8 +375,7 @@ mod tests {
         // A boarding link enters the basket of I first (key 4), then a
         // cheaper no-wait chain I->W->D (key 5 < current u_I = 10) must
         // replace it entirely: exact label, infinite frequency, single link.
-        let all_nodes: HashSet<String> =
-            ["I", "W", "D"].iter().map(|s| s.to_string()).collect();
+        let all_nodes: HashSet<String> = ["I", "W", "D"].iter().map(|s| s.to_string()).collect();
         let all_links = vec![
             // boarding link, key u_D + 4 = 4, accepted first: u_I = 6 + 4 = 10
             Link::new("I", "D", "Bus", 4.0, 6.0),
