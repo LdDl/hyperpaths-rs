@@ -1,7 +1,7 @@
-use crate::transit_network::Link;
-
-pub(crate) struct PqEntry<'a> {
-    pub(crate) link: &'a Link,
+pub(crate) struct PqEntry {
+    /// Index into the solver's link arrays (integer arena), not a reference,
+    /// so priority updates and comparisons avoid string/pointer chasing.
+    pub(crate) link: usize,
     /// u_j + c_a (used for prioritization)
     pub(crate) priority: f64,
     /// The index of the item in the heap, -1 when popped
@@ -10,14 +10,14 @@ pub(crate) struct PqEntry<'a> {
 
 /// Binary min-heap over links keyed by u_j + c_a.
 /// Entries live in an arena and are referred to by their arena id.
-pub(crate) struct PriorityQueue<'a> {
+pub(crate) struct PriorityQueue {
     /// Arena of all entries; an entry id is its position in this vector
-    entries: Vec<PqEntry<'a>>,
+    entries: Vec<PqEntry>,
     /// Heap of entry ids ordered by priority
     heap: Vec<usize>,
 }
 
-impl<'a> PriorityQueue<'a> {
+impl PriorityQueue {
     pub(crate) fn with_capacity(capacity: usize) -> Self {
         PriorityQueue {
             entries: Vec::with_capacity(capacity),
@@ -27,7 +27,7 @@ impl<'a> PriorityQueue<'a> {
 
     /// Appends a new entry without restoring the heap property.
     /// Index fields are assigned later by `init`.
-    pub(crate) fn push(&mut self, link: &'a Link, priority: f64) -> usize {
+    pub(crate) fn push(&mut self, link: usize, priority: f64) -> usize {
         let id = self.entries.len();
         self.entries.push(PqEntry {
             link,
@@ -42,7 +42,14 @@ impl<'a> PriorityQueue<'a> {
         self.heap.len()
     }
 
-    pub(crate) fn link(&self, id: usize) -> &'a Link {
+    /// Empties the queue while keeping the backing capacity, so a Workspace
+    /// can reuse it across destinations without reallocating.
+    pub(crate) fn clear(&mut self) {
+        self.entries.clear();
+        self.heap.clear();
+    }
+
+    pub(crate) fn link(&self, id: usize) -> usize {
         self.entries[id].link
     }
 
@@ -151,10 +158,7 @@ impl<'a> PriorityQueue<'a> {
             .iter()
             .map(|&id| {
                 let entry = &self.entries[id];
-                format!(
-                    "({},{}) == {:.2}",
-                    entry.link.from_node, entry.link.to_node, entry.priority
-                )
+                format!("link#{} == {:.2}", entry.link, entry.priority)
             })
             .collect();
         println!("Priority Queue: [{}]\\\\ ", arr.join(", "));

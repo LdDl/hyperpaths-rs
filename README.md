@@ -123,5 +123,58 @@ it loads a node's inflow links before its outflow links by construction.
    }
    ```
 
+## Two ways to use it
+
+Both APIs run the same algorithm and give identical results; pick by use case.
+
+### Simple (string) API - for debugging and single solves
+
+`compute_sf` / `find_optimal_strategy` / `assign_demand` (shown above) take `&str` node names and a `HashMap<origin, HashMap<dest, f64>>` OD, and return string-keyed maps. It is the easiest to read, and it is the debugging path: set `VERBOSE` to `true` to print a step-by-step trace of both phases. Internally it already uses the integer arena, so a single solve is fast.
+
+Use it for: one-off / single-destination solves, small networks, debugging.
+
+### Arena API - for many destinations and multi-threaded services
+
+Intern the network once into a `Graph`, then reuse a `Workspace` across destinations. Results are integer-indexed (arena) and, once the workspace is warm, allocation-free. On a full assignment (every stop a destination) this is roughly an order of magnitude faster than calling `compute_sf` per destination.
+
+```rust
+use std::collections::HashMap;
+use hyperpaths_rs::{Graph, DestResult};
+
+// once; immutable, shareable
+let graph = Graph::new(&all_links, &all_nodes);
+// reusable buffers
+let mut w = graph.new_workspace();
+
+// od is HashMap<origin, HashMap<dest, f64>>
+w.solve_each(&od, |res: &DestResult| {
+    // res.labels[i], res.link_vol[k], res.node_vol[i] are arena-indexed;
+    // use graph.node_name(i) / graph.node_index(name) to translate.
+    // res is reused on the next destination - copy out what you keep.
+});
+```
+
+For a single destination with an integer demand column there is also the lower-level `w.assign(dest_id, &demand)`.
+
+### Concurrency
+
+A `Graph` is immutable and `Sync`, so share it across threads by reference; a `Workspace` is `&mut`, so the borrow checker guarantees each thread has its own. Build the graph once and hand each thread its own workspace:
+
+```rust
+std::thread::scope(|s| {
+    for _ in 0..num_threads {
+        // shared, immutable
+        let g = &graph;
+        s.spawn(move || {
+            // one per thread
+            let mut w = g.new_workspace();
+            w.solve_each(&od, |res| {
+                // accumulate res.link_vol
+            });
+        });
+    }
+});
+```
+
 ## References
 Spiess, H. and Florian, M. (1989) "Optimal strategies: A new assignment model for transit networks". Transportation Research Part B: Methodological, 23(2), 83-102. Available in: https://doi.org/10.1016/0191-2615(89)90034-9
