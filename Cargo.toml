@@ -1,6 +1,6 @@
 [package]
 name = "hyperpaths-rs"
-version = "0.1.1"
+version = "0.2.0"
 edition = "2024"
 description = "Spiess-Florian optimal strategies transit assignment"
 license = "Apache-2.0"
@@ -12,3 +12,17 @@ keywords = ["transit", "assignment", "hyperpaths", "spiess-florian", "transporta
 categories = ["algorithms", "simulation", "science", "mathematics"]
 
 [dependencies]
+
+[dev-dependencies]
+criterion = { version = "0.8.2", features = ["html_reports"] }
+
+[features]
+# Exposes `hyperpaths_rs::testutil` (synthetic-network helpers). Off by default
+# so it is not shipped; enabled automatically under `cargo test` and required
+# by the `hyperpath` benchmark.
+testutil = []
+
+[[bench]]
+name = "hyperpath"
+harness = false
+required-features = ["testutil"]

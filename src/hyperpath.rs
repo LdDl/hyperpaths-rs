@@ -39,46 +39,82 @@ pub fn find_optimal_strategy<'a>(
     if verbose() {
         println!("1.1 Initialization \\\\");
     }
-    let mut u: HashMap<String, f64> = HashMap::with_capacity(all_stops.len());
-    let mut f: HashMap<String, f64> = HashMap::with_capacity(all_stops.len());
-    for stop in all_stops {
-        if verbose() {
-            println!("$f_{{{}}} = 0$ \\\\ ", stop);
-        }
-        f.insert(stop.clone(), 0.0);
-        if stop == destination {
-            if verbose() {
-                println!("$u_{{{}}} = 0$ \\\\ ", destination);
+
+    // Integer arena: map every node name to a dense index once, so the hot
+    // loops below index slices instead of hashing strings on every access.
+    // all_stops is interned first (indices [0, n_stops)) so the returned
+    // labels/freqs keep exactly the all_stops key set; any link endpoint
+    // outside all_stops (out of contract) is appended after and left out.
+    let mut n_id: HashMap<&str, usize> = HashMap::with_capacity(all_stops.len());
+    let mut n_name: Vec<&str> = Vec::with_capacity(all_stops.len());
+    macro_rules! intern {
+        ($s:expr) => {{
+            let s: &str = $s;
+            match n_id.get(s) {
+                Some(&id) => id,
+                None => {
+                    let id = n_name.len();
+                    n_id.insert(s, id);
+                    n_name.push(s);
+                    id
+                }
             }
-            u.insert(stop.clone(), 0.0);
-            continue;
-        }
-        if verbose() {
-            println!("$u_{{{}}} = Infinity$ \\\\ ", stop);
-        }
-        u.insert(stop.clone(), f64::INFINITY);
+        }};
     }
 
-    let mut overline_a: Vec<Option<&'a Link>> = Vec::with_capacity(all_links.len() / 2);
-    // Positions of each node's basket links inside overline_a, so that a
-    // no-wait link can replace the whole basket. Replaced entries are set
-    // to None and compacted at the end.
-    let mut a_set_idx: HashMap<&'a str, Vec<usize>> = HashMap::new();
+    for stop in all_stops {
+        intern!(stop.as_str());
+    }
+    let n_stops = n_name.len();
 
-    let mut links_by_to_node: HashMap<&'a str, Vec<&'a Link>> = HashMap::new();
-    for link in all_links {
-        links_by_to_node
-            .entry(link.to_node.as_str())
-            .or_default()
-            .push(link);
+    let m = all_links.len();
+    let mut l_from = vec![0usize; m];
+    let mut l_to = vec![0usize; m];
+    let mut l_cost = vec![0.0f64; m];
+    let mut l_head = vec![0.0f64; m];
+    for (k, link) in all_links.iter().enumerate() {
+        l_from[k] = intern!(link.from_node.as_str());
+        l_to[k] = intern!(link.to_node.as_str());
+        l_cost[k] = link.travel_cost;
+        l_head[k] = link.headway;
+    }
+    let dest_id = intern!(destination);
+    let n = n_name.len();
+
+    // u_i and f_i as dense slices instead of HashMap<String, f64>.
+    let mut u = vec![f64::INFINITY; n];
+    let mut f = vec![0.0f64; n];
+    u[dest_id] = 0.0;
+    if verbose() {
+        for (id, name) in n_name.iter().enumerate() {
+            println!("$f_{{{}}} = 0$ \\\\ ", name);
+            if id == dest_id {
+                println!("$u_{{{}}} = 0$ \\\\ ", name);
+            } else {
+                println!("$u_{{{}}} = Infinity$ \\\\ ", name);
+            }
+        }
     }
 
-    let mut entries: HashMap<&'a str, Vec<usize>> = HashMap::with_capacity(all_links.len());
-    let mut pq = PriorityQueue::with_capacity(all_links.len());
-    for link in all_links {
-        let priority = u.get(&link.to_node).copied().unwrap_or(0.0) + link.travel_cost;
-        let id = pq.push(link, priority);
-        entries.entry(link.from_node.as_str()).or_default().push(id);
+    // overline_a holds accepted link indices in acceptance order; a no-wait
+    // link replaces a node's whole basket, and replaced slots become None and
+    // are compacted at the end. a_set_idx[node] are that node's positions.
+    let mut overline_a: Vec<Option<usize>> = Vec::with_capacity(m / 2);
+    let mut a_set_idx: Vec<Vec<usize>> = vec![Vec::new(); n];
+
+    // Adjacency by head node: the link indices whose to-node == node, so that
+    // when u[node] improves exactly those incoming links are re-keyed.
+    let mut adj_by_to: Vec<Vec<usize>> = vec![Vec::new(); n];
+    for k in 0..m {
+        adj_by_to[l_to[k]].push(k);
+    }
+
+    // One priority-queue entry per link, pushed in link order so the entry id
+    // equals the link index; this lets the update step reach a link's entry
+    // directly, with no scan.
+    let mut pq = PriorityQueue::with_capacity(m);
+    for k in 0..m {
+        pq.push(k, u[l_to[k]] + l_cost[k]);
     }
     pq.init();
     if verbose() {
@@ -97,23 +133,21 @@ pub fn find_optimal_strategy<'a>(
         if priority.is_infinite() && priority > 0.0 {
             break;
         }
-        let a = pq.link(entry_id);
-        let i = a.from_node.as_str();
-        let j = a.to_node.as_str();
-        let sum_uc = u.get(j).copied().unwrap_or(0.0) + a.travel_cost;
+        let k = pq.link(entry_id);
+        let i = l_from[k];
+        let j = l_to[k];
+        let sum_uc = u[j] + l_cost[k];
 
         /* 1.3 Update node label */
         if verbose() {
-            println!("Process: $a = (i, j) = ({}, {})$, \\\\ ", i, j);
+            println!("Process: $a = (i, j) = ({}, {})$, \\\\ ", n_name[i], n_name[j]);
         }
         // A node already served by a no-wait link is final: the no-wait
         // link absorbs all flow (its share f_a/f_i is 1 in the limit),
         // so no other link may enter the basket
-        let f_i = f.get(i).copied().unwrap_or(0.0);
-        if f_i.is_infinite() {
+        if f[i].is_infinite() {
             continue;
         }
-        let u_i = u.get(i).copied().unwrap_or(0.0);
         // Strict improvement test: a link is accepted only if it
         // strictly improves the label. Step 1.3 of Spiess & Florian
         // (1989) prints the nonstrict u_i >= u_j + c_a, but the two
@@ -140,100 +174,97 @@ pub fn find_optimal_strategy<'a>(
         // exactly this strict rule. All step, equation and page
         // references above are to the original paper, not to the
         // spiess_floarian.tex excerpt in this repository.
-        if u_i <= sum_uc {
+        if u[i] <= sum_uc {
             continue;
         }
         if verbose() {
             println!(
                 "\\quad $u_i \\leq u_j + c_a : {} \\leq {}$ - FALSE \\\\ ",
-                u_i, sum_uc
+                u[i], sum_uc
             );
         }
-        if a.headway <= 0.0 {
+        if l_head[k] <= 0.0 {
             // No-wait link (infinite frequency): the modified step 1.3
             // given by the paper on p. 96 - the exact limit of the label
             // update formula as f_a -> inf. The link replaces the whole
             // attractive basket:
             //   u_i := u_j + c_a, f_i := inf, A_i := {a}
-            u.insert(i.to_string(), sum_uc);
-            f.insert(i.to_string(), f64::INFINITY);
-            let indices = a_set_idx.entry(i).or_default();
-            for idx in indices.iter() {
-                overline_a[*idx] = None;
+            u[i] = sum_uc;
+            f[i] = f64::INFINITY;
+            for &idx in &a_set_idx[i] {
+                overline_a[idx] = None;
             }
-            indices.clear();
-            overline_a.push(Some(a));
-            indices.push(overline_a.len() - 1);
+            a_set_idx[i].clear();
+            overline_a.push(Some(k));
+            a_set_idx[i].push(overline_a.len() - 1);
             if verbose() {
                 println!(
                     "\\quad no-wait link: $u_i = u_j + c_a = {}$, $f_i = \\infty$, basket replaced by $({}, {})$ \\\\ ",
-                    sum_uc, i, j
+                    sum_uc, n_name[i], n_name[j]
                 );
             }
         } else {
-            let freq = 1.0 / a.headway;
+            let freq = 1.0 / l_head[k];
             if verbose() {
                 println!("\\quad $f_a = {}$ \\\\ ", freq);
                 println!("\\quad $u_j + c_a = {}$ \\\\ ", sum_uc);
-                println!("\\quad $u_i = {}$ \\\\ ", u_i);
+                println!("\\quad $u_i = {}$ \\\\ ", u[i]);
             }
-            let new_u = if f_i == 0.0 {
+            let new_u = if f[i] == 0.0 {
                 // First link in the basket: u_i = (1 + f_a*(u_j+c_a)) / f_a
                 (ALPHA + freq * sum_uc) / freq
             } else {
-                (f_i * u_i + freq * sum_uc) / (f_i + freq)
+                (f[i] * u[i] + freq * sum_uc) / (f[i] + freq)
             };
-            u.insert(i.to_string(), new_u);
-            f.insert(i.to_string(), f_i + freq);
-            overline_a.push(Some(a));
-            a_set_idx.entry(i).or_default().push(overline_a.len() - 1);
+            u[i] = new_u;
+            f[i] += freq;
+            overline_a.push(Some(k));
+            a_set_idx[i].push(overline_a.len() - 1);
             if verbose() {
                 println!(
                     "\\quad$u_i = \\frac{{f_i * u_i + f_a * (u_j + c_a)}}{{f_i + f_a}} = {}$, $f_i = {}$ \\\\ ",
-                    new_u,
-                    f_i + freq
+                    new_u, f[i]
                 );
                 println!(
                     "\\quad $\\overline{{A}} = \\overline{{A}} \\cup {{({}, {})}}$ \\\\ ",
-                    i, j
+                    n_name[i], n_name[j]
                 );
             }
         }
 
-        if let Some(links_to_update) = links_by_to_node.get(i) {
-            for link in links_to_update {
-                if let Some(i_entries) = entries.get(link.from_node.as_str()) {
-                    for &eid in i_entries {
-                        let entry_link = pq.link(eid);
-                        if entry_link.to_node == i && entry_link.from_node == link.from_node {
-                            let new_priority = u.get(i).copied().unwrap_or(0.0) + link.travel_cost;
-                            pq.update(eid, new_priority);
-                            break;
-                        }
-                    }
-                }
-            }
+        // u[i] improved: re-key exactly the links entering i. The entry id
+        // equals the link index, so update reaches each directly.
+        for &kk in &adj_by_to[i] {
+            pq.update(kk, u[i] + l_cost[kk]);
         }
         if verbose() {
             println!("Node labels: \\\\");
-            for s in all_stops {
-                println!(
-                    "${} -> (u_i, f_i) = ({}, {})$ \\\\ ",
-                    s,
-                    u.get(s).copied().unwrap_or(0.0),
-                    f.get(s).copied().unwrap_or(0.0)
-                );
+            for (id, name) in n_name.iter().enumerate() {
+                println!("${} -> (u_i, f_i) = ({}, {})$ \\\\ ", name, u[id], f[id]);
             }
         }
     }
 
     // Compact the attractive set: drop entries replaced by no-wait links.
     // The append order is preserved, i.e. non-decreasing u_j + c_a.
-    let a_set: Vec<&'a Link> = overline_a.into_iter().flatten().collect();
+    let a_set: Vec<&'a Link> = overline_a
+        .into_iter()
+        .flatten()
+        .map(|k| &all_links[k])
+        .collect();
+
+    // Translate the arena labels/freqs back to the public string-keyed maps,
+    // for the all_stops key set only.
+    let mut labels: HashMap<String, f64> = HashMap::with_capacity(n_stops);
+    let mut freqs: HashMap<String, f64> = HashMap::with_capacity(n_stops);
+    for id in 0..n_stops {
+        labels.insert(n_name[id].to_string(), u[id]);
+        freqs.insert(n_name[id].to_string(), f[id]);
+    }
 
     Strategy {
-        labels: u,
-        freqs: f,
+        labels,
+        freqs,
         a_set,
     }
 }
